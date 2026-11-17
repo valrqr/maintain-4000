@@ -30,18 +30,22 @@ def gisement(lat, lon):
 
 arr = pd.concat(pd.read_parquet(f) for f in glob.glob(str(ROOT / "data/raw/arr_*.parquet")))
 arr["dist_km"] = haversine_km(arr["latitude"], arr["longitude"])
+runway = pd.read_parquet(ROOT / "data/processed/flights.parquet").set_index("flight_id")["runway"]
+arr["runway"] = arr["flight_id"].map(runway)
 
 lignes = []
-for rayon in [10, 20, 40, 60]:
-    dehors = arr[arr["dist_km"] >= rayon].sort_values("timestamp")
-    passage = dehors.groupby("flight_id").tail(1)
-    g = np.radians(gisement(passage["latitude"], passage["longitude"]))
-    R = np.hypot(np.sin(g).mean(), np.cos(g).mean())
-    lignes.append({
-        "rayon_km": rayon,
-        "vols": len(passage),
-        "dispersion_deg": round(np.degrees(np.sqrt(-2 * np.log(R))), 1),
-        "secteurs_30deg": int((np.degrees(g) // 30).nunique()),
-    })
+for piste, vols in arr[arr["runway"].isin(["04", "22"])].groupby("runway"):
+    for rayon in [10, 20, 40, 60]:
+        dehors = vols[vols["dist_km"] >= rayon].sort_values("timestamp")
+        passage = dehors.groupby("flight_id").tail(1)
+        g = np.radians(gisement(passage["latitude"], passage["longitude"]))
+        R = np.hypot(np.sin(g).mean(), np.cos(g).mean())
+        lignes.append({
+            "piste": piste,
+            "rayon_km": rayon,
+            "vols": len(passage),
+            "dispersion_deg": round(np.degrees(np.sqrt(-2 * np.log(R))), 1),
+            "secteurs_30deg": int((np.degrees(g) // 30).nunique()),
+        })
 
 print(pd.DataFrame(lignes).to_string(index=False))

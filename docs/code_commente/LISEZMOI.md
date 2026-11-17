@@ -20,7 +20,7 @@ Suis le trajet de la donnée, de l'antenne au dashboard :
 | 6 | `src/eco_nice/fuel.py` | Estimation du carburant et du CO₂ (modèle OpenAP) |
 | 7 | `scripts/02_build_tables.py` | Assemblage des 2 tables d'analyse |
 | 8 | `scripts/03_load_bigquery.py` | Chargement dans BigQuery |
-| 8 bis | `scripts/04_figures.py` | Les graphiques et la carte du README |
+| 8 bis | `scripts/04_figures.py` | Les graphiques et les cartes du README |
 | 8 ter | `scripts/05_dispersion.py` | Dispersion des arrivées selon la distance à Nice |
 | 9 | `dbt/models/staging/*.sql` | Nettoyage des tables brutes (vues) |
 | 10 | `dbt/models/marts/fct_arrivals_efficiency.sql` | Table finale pour l'analyse et Power BI |

@@ -156,8 +156,11 @@ def fig3_altitudes(levels: pd.DataFrame) -> None:
     counts = low.value_counts().reindex(bands, fill_value=0)
     labels = [f"{fr(b)} ft et +" if b >= 10_000 else f"{fr(b)} – {fr(b + 499)} ft"
               for b in counts.index]
-    top = counts.idxmax()
-    colors = [ACCENT if b == top else NEUTRAL for b in counts.index]
+    below = counts[counts.index < 10_000]
+    window = below.rolling(3, min_periods=1).sum()   # 3 adjacent bands = 1,500 ft
+    top = int(window.idxmax()) - 1_000               # lowest band of the busiest window
+    in_window = [top <= b < top + 1_500 for b in counts.index]
+    colors = [ACCENT if w else NEUTRAL for w in in_window]
 
     fig, ax = plt.subplots(figsize=(9, 0.42 * len(counts) + 1.6))
     ax.barh(labels, counts.values, color=colors, height=0.72)
@@ -166,12 +169,51 @@ def fig3_altitudes(levels: pd.DataFrame) -> None:
             ax.text(v + 0.3, y, str(v), va="center", fontsize=10, color=INK_2)
     ax.grid(axis="y", visible=False)
     ax.set_xlabel("Nombre de paliers")
-    share = counts[top] / len(levels) * 100
-    band = f"{fr(top)} ft et plus" if top >= 10_000 else f"entre {fr(top)} et {fr(top + 499)} ft"
-    titles(ax, f"{fr(share)} % des paliers se situent {band}",
-           f"Altitude des {len(levels)} paliers détectés, par tranche de 500 ft "
-           f"(pression standard, 1013 hPa)")
+    share = counts[in_window].sum() / len(levels) * 100
+    titles(ax, f"{fr(share)} % des paliers se situent entre {fr(top)} et {fr(top + 1_499)} ft",
+           f"Altitude des {len(levels)} paliers, par tranche de 500 ft (altitude pression, 1013 hPa)")
     save(fig, "fig3_altitudes.png")
+
+
+# --------------------------------------------------------------------------- #
+TRAFFIC_BINS = [0, 3, 6, 99]
+TRAFFIC_LABELS = ["calme\n1 à 3 arrivées/h", "moyen\n4 à 6 arrivées/h", "chargé\n7 arrivées/h et +"]
+
+
+def fig5_traffic(flights: pd.DataFrame, levels: pd.DataFrame) -> None:
+    """Share of arrivals with at least one level-off, by arrivals in the same hour."""
+    arr = flights[flights.direction == "arr"].copy()
+    if arr.empty:
+        print("fig5 skipped: no arrival")
+        return
+    arr["hour"] = pd.to_datetime(arr.last_seen, utc=True).dt.tz_convert("Europe/Paris").dt.floor("h")
+    arr["same_hour"] = arr.groupby("hour").flight_id.transform("count")
+    arr["has_level"] = arr.flight_id.isin(levels.flight_id)
+    arr["traffic"] = pd.cut(arr.same_hour, TRAFFIC_BINS, labels=TRAFFIC_LABELS)
+    stats = arr.groupby("traffic", observed=False).agg(n=("flight_id", "size"),
+                                                       share=("has_level", "mean"))
+    stats["share"] = stats.share.fillna(0) * 100
+
+    fig, ax = plt.subplots(figsize=(9, 4.6))
+    colors = [NEUTRAL, ACCENT, ACCENT]
+    ax.bar(stats.index.astype(str), stats.share, color=colors, width=0.6)
+    for x, (n, s) in enumerate(zip(stats.n, stats.share)):
+        if n == 0:
+            ax.text(x, 3, "aucune arrivée", ha="center", fontsize=9.5, color=INK_2)
+            continue
+        ax.text(x, s + 2, f"{fr(s)} %", ha="center", fontsize=12, fontweight="bold", color=INK)
+        inside = x > 0 and s > 12
+        ax.text(x, 3, f"{n} arrivées", ha="center", fontsize=9.5, color="white" if inside else INK)
+    ax.set_ylim(0, 112)                                   # headroom for the 100 % label
+    ax.set_yticks(range(0, 101, 20))
+    ax.set_ylabel("Arrivées avec au moins un palier (%)")
+    ax.grid(axis="x", visible=False)
+    calm = stats.share.iloc[0]
+    busy = arr.loc[arr.same_hour > TRAFFIC_BINS[1], "has_level"].mean() * 100
+    titles(ax, f"Dès 4 arrivées par heure, {fr(busy)} % des avions font un palier",
+           f"Contre {fr(calm)} % aux heures calmes. Trafic = arrivées à Nice dans la même heure "
+           f"(heure locale)")
+    save(fig, "fig5_trafic.png")
 
 
 # --------------------------------------------------------------------------- #
@@ -236,27 +278,36 @@ def basemap(ax, lat_min, lat_max, lon_min, lon_max, z: int = 10) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-def fig4_map(flights: pd.DataFrame, levels: pd.DataFrame) -> None:
-    """All arrival tracks in grey, their level-off portions in the accent colour."""
+MAP_GREY = "#6b6a64"
+
+
+def load_arrival_tracks(flights: pd.DataFrame) -> pd.DataFrame | None:
+    """Airborne positions of all arrivals, projected, with the runway of each flight."""
     paths = list(RAW.glob("arr_*.parquet"))
     if not paths:
-        print("fig4 skipped: no arrival file")
-        return
+        return None
     raw = pd.concat(pd.read_parquet(p) for p in paths)
     raw = raw[~raw.onground.astype(bool)].dropna(subset=["latitude", "longitude"])
     raw = raw.sort_values(["flight_id", "timestamp"])
     raw["x"], raw["y"] = to_mercator(raw.latitude.to_numpy(), raw.longitude.to_numpy())
+    raw["runway"] = raw.flight_id.map(flights.set_index("flight_id").runway)
+    return raw
 
+
+def map_extent(raw: pd.DataFrame) -> tuple[float, float, float, float]:
+    """(lat_min, lat_max, lon_min, lon_max) covering 98 % of positions, plus a margin."""
     lat_min, lat_max = raw.latitude.quantile([0.01, 0.99])   # ignore a few stray points
     lon_min, lon_max = raw.longitude.quantile([0.01, 0.99])
-    lat_min, lat_max = lat_min - 0.08, lat_max + 0.08
-    lon_min, lon_max = lon_min - 0.10, lon_max + 0.10
+    return lat_min - 0.08, lat_max + 0.08, lon_min - 0.10, lon_max + 0.10
 
-    fig, ax = plt.subplots(figsize=(9, 7.2))
+
+def draw_map(ax, raw: pd.DataFrame, levels: pd.DataFrame, extent) -> None:
+    """Basemap, grey tracks, blue level-offs and the airport on one axis."""
+    lat_min, lat_max, lon_min, lon_max = extent
     has_bg = basemap(ax, lat_min, lat_max, lon_min, lon_max)
 
     for _, t in raw.groupby("flight_id"):
-        ax.plot(t.x, t.y, color="#6b6a64", lw=0.6, alpha=0.35, zorder=1)
+        ax.plot(t.x, t.y, color=MAP_GREY, lw=0.6, alpha=0.35, zorder=1)
     for _, lv in levels.iterrows():
         t = raw[(raw.flight_id == lv.flight_id) & raw.timestamp.between(lv.start, lv.end)]
         ax.plot(t.x, t.y, color=ACCENT, lw=2.2, solid_capstyle="round", zorder=2)
@@ -264,7 +315,7 @@ def fig4_map(flights: pd.DataFrame, levels: pd.DataFrame) -> None:
     apt_x, apt_y = to_mercator(LFMN[0], LFMN[1])
     ax.plot(apt_x, apt_y, marker="o", ms=9, color=INK, markeredgecolor=SURFACE,
             markeredgewidth=2, zorder=3)
-    ax.annotate("Nice Côte d'Azur (LFMN)", (apt_x, apt_y), xytext=(10, -14),
+    ax.annotate("Nice Côte d'Azur (LFMN)", (apt_x, apt_y), xytext=(-12, 10), ha="right",
                 textcoords="offset points", fontsize=10.5, color=INK, zorder=3,
                 bbox=dict(boxstyle="round,pad=0.25", fc=SURFACE, ec="none", alpha=0.85))
 
@@ -279,13 +330,54 @@ def fig4_map(flights: pd.DataFrame, levels: pd.DataFrame) -> None:
                 fontsize=8, color=INK_2,
                 bbox=dict(boxstyle="square,pad=0.2", fc=SURFACE, ec="none", alpha=0.8))
 
-    ax.plot([], [], color="#6b6a64", lw=1.2, label="trajectoire d'arrivée")
+
+def map_legend(ax) -> None:
+    ax.plot([], [], color=MAP_GREY, lw=1.2, label="trajectoire d'arrivée")
     ax.plot([], [], color=ACCENT, lw=2.2, label="portion en palier")
     ax.legend(loc="upper left", frameon=True, facecolor=SURFACE, edgecolor="none", fontsize=10)
+
+
+def fig4_map(flights: pd.DataFrame, levels: pd.DataFrame) -> None:
+    """Runway 04 arrival tracks in grey, their level-off portions in the accent colour."""
+    raw = load_arrival_tracks(flights)
+    if raw is None:
+        print("fig4 skipped: no arrival file")
+        return
+    raw = raw[raw.runway == "04"]
+    levels = levels[levels.flight_id.isin(raw.flight_id)]
+
+    fig, ax = plt.subplots(figsize=(9, 7.2))
+    draw_map(ax, raw, levels, map_extent(raw))
+    map_legend(ax)
     titles(ax, "Où les avions font-ils leurs paliers avant d'atterrir à Nice ?",
-           f"{raw.flight_id.nunique()} arrivées et leurs {len(levels)} paliers, "
+           f"{raw.flight_id.nunique()} arrivées en piste 04 et leurs {len(levels)} paliers, "
            f"positions OpenSky toutes les 25 s")
     save(fig, "fig4_carte_approches.png")
+
+
+def fig4b_runways(flights: pd.DataFrame, levels: pd.DataFrame) -> None:
+    """Runway 04 and runway 22 side by side, same frame and same colours."""
+    raw = load_arrival_tracks(flights)
+    if raw is None:
+        print("fig4b skipped: no arrival file")
+        return
+    raw = raw[raw.runway.isin(["04", "22"])]
+    extent = map_extent(raw)                 # one frame for both maps, so they compare
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6.6))
+    for ax, runway in zip(axes, ["04", "22"]):
+        r = raw[raw.runway == runway]
+        lv = levels[levels.flight_id.isin(r.flight_id)]
+        draw_map(ax, r, lv, extent)
+        ax.set_title(f"Piste {runway} : {r.flight_id.nunique()} arrivées, {len(lv)} paliers",
+                     loc="left", fontsize=12, fontweight="bold", color=INK, pad=8)
+    map_legend(axes[0])
+    fig.subplots_adjust(wspace=0.04)
+    fig.suptitle("Deux configurations de piste, deux façons d'arriver à Nice",
+                 x=0.02, y=1.06, ha="left", fontsize=14, fontweight="bold", color=INK)
+    fig.text(0.02, 0.995, "Peu d'arrivées en piste 22 sur la période : lecture indicative.",
+             ha="left", fontsize=10.5, color=INK_2)
+    save(fig, "fig4b_pistes.png")
 
 
 def main() -> None:
@@ -295,6 +387,8 @@ def main() -> None:
     fig2_concentration(levels)
     fig3_altitudes(levels)
     fig4_map(flights, levels)
+    fig4b_runways(flights, levels)
+    fig5_traffic(flights, levels)
 
 
 if __name__ == "__main__":

@@ -59,30 +59,39 @@ def gisement(lat, lon):
 arr = pd.concat(pd.read_parquet(f) for f in glob.glob(str(ROOT / "data/raw/arr_*.parquet")))
 # Distance de chaque position à l'aéroport.
 arr["dist_km"] = haversine_km(arr["latitude"], arr["longitude"])
+# Piste utilisée par chaque arrivée (04 ou 22), calculée par 02_build_tables.py.
+runway = pd.read_parquet(ROOT / "data/processed/flights.parquet").set_index("flight_id")["runway"]
+# On ajoute cette piste à chaque position du vol.
+arr["runway"] = arr["flight_id"].map(runway)
 
-# Une ligne de résultat par rayon.
+# Une ligne de résultat par piste et par rayon.
 lignes = []
-for rayon in [10, 20, 40, 60]:
-    # On garde les positions situées HORS du cercle, triées dans le temps.
-    dehors = arr[arr["dist_km"] >= rayon].sort_values("timestamp")
-    # Pour une arrivée, le dernier point hors du cercle = le moment où elle y entre.
-    passage = dehors.groupby("flight_id").tail(1)
-    # Gisement de ce point d'entrée, en radians.
-    g = np.radians(gisement(passage["latitude"], passage["longitude"]))
-    # Moyenne circulaire : on additionne des flèches de longueur 1. Si elles
-    # pointent toutes du même côté, la flèche moyenne est longue (R proche de 1) ;
-    # si elles partent dans tous les sens, elles s'annulent (R proche de 0).
-    # (On ne peut pas faire une moyenne simple : la moyenne de 350° et 10° n'est pas 180°.)
-    R = np.hypot(np.sin(g).mean(), np.cos(g).mean())
-    lignes.append({
-        "rayon_km": rayon,
-        # Nombre d'arrivées vues à cette distance (moins à 60 km : bord de la zone de collecte).
-        "vols": len(passage),
-        # Écart-type circulaire, en degrés : ≈ 0° = un seul couloir, > 60° = de partout.
-        "dispersion_deg": round(np.degrees(np.sqrt(-2 * np.log(R))), 1),
-        # Nombre de « parts de gâteau » de 30° utilisées par au moins une arrivée.
-        "secteurs_30deg": int((np.degrees(g) // 30).nunique()),
-    })
+# Une piste à la fois : en mélangeant les deux, les avions arrivent de deux côtés
+# opposés et la dispersion devient artificiellement énorme. Les vols sans piste
+# identifiée sont exclus.
+for piste, vols in arr[arr["runway"].isin(["04", "22"])].groupby("runway"):
+    for rayon in [10, 20, 40, 60]:
+        # On garde les positions situées HORS du cercle, triées dans le temps.
+        dehors = vols[vols["dist_km"] >= rayon].sort_values("timestamp")
+        # Pour une arrivée, le dernier point hors du cercle = le moment où elle y entre.
+        passage = dehors.groupby("flight_id").tail(1)
+        # Gisement de ce point d'entrée, en radians.
+        g = np.radians(gisement(passage["latitude"], passage["longitude"]))
+        # Moyenne circulaire : on additionne des flèches de longueur 1. Si elles
+        # pointent toutes du même côté, la flèche moyenne est longue (R proche de 1) ;
+        # si elles partent dans tous les sens, elles s'annulent (R proche de 0).
+        # (On ne peut pas faire une moyenne simple : la moyenne de 350° et 10° n'est pas 180°.)
+        R = np.hypot(np.sin(g).mean(), np.cos(g).mean())
+        lignes.append({
+            "piste": piste,
+            "rayon_km": rayon,
+            # Nombre d'arrivées vues à cette distance (moins à 60 km : bord de la zone de collecte).
+            "vols": len(passage),
+            # Écart-type circulaire, en degrés : ≈ 0° = un seul couloir, > 60° = de partout.
+            "dispersion_deg": round(np.degrees(np.sqrt(-2 * np.log(R))), 1),
+            # Nombre de « parts de gâteau » de 30° utilisées par au moins une arrivée.
+            "secteurs_30deg": int((np.degrees(g) // 30).nunique()),
+        })
 
 # Affichage du tableau, sans la colonne d'index.
 print(pd.DataFrame(lignes).to_string(index=False))
