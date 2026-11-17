@@ -1,0 +1,11 @@
+# Copy to ~/.dbt/profiles.yml and fill in your GCP project.
+eco_flying_nice:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: oauth            # gcloud auth application-default login
+      project: YOUR_GCP_PROJECT
+      dataset: eco_nice
+      location: EU
+      threads: 4

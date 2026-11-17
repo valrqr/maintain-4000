@@ -1,0 +1,12 @@
+version: 2
+
+models:
+  - name: fct_arrivals_efficiency
+    description: >
+      One row per arrival at LFMN. A descent with zero level segment counts as continuous (CDO).
+      Fuel/CO2 are OpenAP model estimates (assumed mass, ground speed used as TAS).
+    columns:
+      - name: flight_id
+        data_tests: [unique, not_null]
+      - name: n_level_offs
+        data_tests: [not_null]

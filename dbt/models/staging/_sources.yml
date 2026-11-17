@@ -1,0 +1,8 @@
+version: 2
+
+sources:
+  - name: raw_eco_nice
+    description: Tables built by scripts/02_build_tables.py from OpenSky ADS-B data.
+    tables:
+      - name: flights
+      - name: level_offs

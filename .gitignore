@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/raw/*
+data/processed/*
+data/tiles/
+!data/**/.gitkeep
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+*.pbix.bak
+
+# personal exercise, not part of the published project
+exercice/
+credentials.json
+.DS_Store
+data/opensky_live/
+check_arrival.png
